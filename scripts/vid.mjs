@@ -13,6 +13,7 @@ const FPS = 30;
 const ACCENT = '&H0000D2FF'; // #FFD200 у форматі ASS (BGR)
 // Windows: системний Segoe UI Black; macOS/Linux: Montserrat Black з fonts/ (OFL), обидва з кирилицею
 const FONT = IS_WIN ? 'Segoe UI Black' : 'Montserrat Black';
+const SPLIT_STYLE = { subY: 915, titleY: 780, calloutY: 150 };
 
 // ---------- утиліти ----------
 let _ff, _fp;
@@ -21,12 +22,13 @@ const ffprobe = () => (_fp ??= need('ffprobe', findBin('ffprobe')));
 
 function run(bin, args, opts = {}) {
   const r = spawnSync(bin, args, { encoding: 'utf8', maxBuffer: 1 << 30, ...opts });
-  if (r.status !== 0) throw new Error(`${path.basename(bin)} впав:\n${(r.stderr || '').slice(-3000)}`);
+  if (r.status !== 0) throw new Error(`${path.basename(bin)} впав:\n${String(r.stderr || '').slice(-3000)}`);
   return r;
 }
 
 const r2 = (x) => Math.round(x * 100) / 100;
-const even = (x) => Math.max(2, Math.round(x / 2) * 2);
+const even = (x) => Math.max(2, Math.round(x / 2) * 2); // розміри
+const evenPos = (x) => Math.max(0, Math.round(x / 2) * 2); // координати (можуть бути 0)
 const workDir = (video) => path.join(path.dirname(video), 'work', path.parse(video).name);
 
 // ---------- prep ----------
@@ -45,16 +47,73 @@ function probe(video) {
   };
 }
 
-function prep(video, lang = 'auto') {
-  video = path.resolve(video);
-  const dir = workDir(video);
+// Формат 2: у папці лежать камера, запис екрана й окремий мікрофон — шукаємо їх за назвою
+function findSources(dir) {
+  const files = fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile());
+  const pick = (re, ext) => { const f = files.find((x) => re.test(x) && ext.test(x)); return f && path.join(dir, f); };
+  const vid = /\.(mp4|mov|mkv|webm)$/i;
+  const src = {
+    head: pick(/head|голов|cam|камер/i, vid),
+    screen: pick(/screen|екран/i, vid),
+    audio: pick(/sound|audio|mic|звук|мікро/i, /\.(wav|mp3|m4a|aac|flac)$/i),
+  };
+  if (!src.head) throw new Error(`у ${dir} не знайдено відео камери (назва має містити Head / голова / cam)`);
+  return src;
+}
+
+// огинаюча гучності з частотою `rate` Гц (середнє |x| у вікні), без постійної складової
+function envelope(file, rate) {
+  const step = 16;
+  const buf = run(ffmpeg(), ['-v', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(rate * step), '-f', 's16le', '-'], { encoding: 'buffer' }).stdout;
+  const o = new Float32Array(Math.floor(buf.length / 2 / step));
+  for (let i = 0; i < o.length; i++) { let s = 0; for (let j = 0; j < step; j++) s += Math.abs(buf.readInt16LE((i * step + j) * 2)); o[i] = s / step; }
+  const m = o.reduce((a, x) => a + x, 0) / o.length;
+  return o.map((x) => x - m);
+}
+
+// зсув (у відліках), за якого b найкраще лягає на a: b[i] ≈ a[i + lag]
+function xcorrLag(a, b, from, to) {
+  let best = -Infinity, lag = 0;
+  for (let l = from; l <= to; l++) {
+    let s = 0;
+    for (let i = Math.max(0, -l); i < b.length && i + l < a.length; i++) s += a[i + l] * b[i];
+    if (s > best) { best = s; lag = l; }
+  }
+  return lag;
+}
+
+// де в `ref` (секунди) починається `other`: грубо на 100 Гц у межах ±60 с, далі точно на 1 кГц ±0.1 с
+function syncOffset(ref, other) {
+  const coarse = xcorrLag(envelope(ref, 100), envelope(other, 100), -6000, 6000) / 100;
+  const c = Math.round(coarse * 1000);
+  return xcorrLag(envelope(ref, 1000), envelope(other, 1000), c - 100, c + 100) / 1000;
+}
+
+function prep(input, lang = 'auto', opts = {}) {
+  input = path.resolve(input);
+  const src = fs.statSync(input).isDirectory() ? findSources(input)
+    : { head: input, audio: opts.audio && path.resolve(opts.audio), screen: opts.screen && path.resolve(opts.screen) };
+  const video = src.head;
+  const name = path.parse(video).name.replace(/[\s_-]*(head|голова|cam|camera|камера)$/i, '') || path.parse(video).name;
+  const dir = path.join(path.dirname(video), 'work', name);
   fs.mkdirSync(dir, { recursive: true });
   const info = probe(video);
   fs.writeFileSync(path.join(dir, 'probe.json'), JSON.stringify(info, null, 2));
   console.log('probe:', info);
 
+  // головна шкала часу — окремий мікрофон, якщо він є; зсуви: час_у_файлі = t_мікрофона + зсув
+  const voice = src.audio ?? video;
+  if (src.audio || src.screen) {
+    const rel = (f) => f && path.relative(path.dirname(video), f).replaceAll('\\', '/');
+    const sync = { source: rel(video), audio: rel(src.audio), screen: rel(src.screen),
+      head: src.audio ? syncOffset(video, src.audio) : 0 };
+    if (src.screen) sync.screenOffset = src.audio ? syncOffset(src.screen, src.audio) : syncOffset(src.screen, video);
+    fs.writeFileSync(path.join(dir, 'sync.json'), JSON.stringify(sync, null, 2));
+    console.log('синхронізація (час_у_файлі = t + зсув):', sync);
+  }
+
   const wav = path.join(dir, 'audio16k.wav');
-  run(ffmpeg(), ['-y', '-v', 'error', '-i', video, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav]);
+  run(ffmpeg(), ['-y', '-v', 'error', '-i', voice, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav]);
 
   console.log('whisper… (на слабкому CPU це кілька хвилин)');
   run(need('whisper-cli', findWhisper()), ['-m', WHISPER_MODEL, '-l', lang, '-t', String(os.availableParallelism()),
@@ -157,7 +216,9 @@ function chunkWords(words, maxWords = 3, maxChars = 16) {
 }
 
 function buildAss(edit, segs, words, total) {
-  const st = { subY: 520, calloutY: 330, titleY: 360, ...edit.style };
+  // спліт: субтитри на стику половин, титул над стиком, плашки вгорі екрана
+  const split = edit.screen && edit.layout !== 'head';
+  const st = { subY: 520, calloutY: 330, titleY: 360, ...(split ? SPLIT_STYLE : {}), ...edit.style };
   const ev = [];
   const dlg = (s, e, style, text) => ev.push(`Dialogue: 0,${assTime(s)},${assTime(e)},${style},,0,0,0,,${text}`);
 
@@ -208,13 +269,14 @@ ${ev.join('\n')}
 }
 
 // ---------- граф ffmpeg ----------
-function cropBox(src, cropX = 0.5, zoom = 1) {
-  const a = 9 / 16;
+// кроп під аспект a (w/h): повна висота або ширина, зсув cropX, наближення zoom до верхньої частини (обличчя)
+function cropBox(src, cropX = 0.5, zoom = 1, a = 9 / 16) {
   let bw = src.width, bh = src.height, bx = 0, by = 0;
   if (src.width / src.height > a) { bw = src.height * a; bx = (src.width - bw) * cropX; }
   else { bh = src.width / a; by = (src.height - bh) * 0.5; }
   const w = bw / zoom, h = bh / zoom;
-  return { w: even(w), h: even(h), x: even(bx + (bw - w) / 2), y: even(by + (bh - h) * 0.4) };
+  const W2 = Math.min(even(w), src.width), H2 = Math.min(even(h), src.height);
+  return { w: W2, h: H2, x: Math.min(evenPos(bx + (bw - w) / 2), src.width - W2), y: Math.min(evenPos(by + (bh - h) * 0.4), src.height - H2) };
 }
 
 // координати в просторі 1080×1920 (S — розмір іконки там же)
@@ -226,28 +288,58 @@ const ICON_POS = {
   'mid-left': () => [50, 760],
 };
 
-const segVideo = (g, i, src, edit, W, H) => {
-  const c = cropBox(src, edit.cropX ?? 0.5, g.zoom ?? 1);
-  return `[v${i}]trim=start=${g.start}:end=${g.end},setpts=PTS-STARTPTS,crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${W}:${H}:flags=lanczos,setsar=1,fps=${FPS}[sv${i}]`;
+// ділянка екрана focus = [x, y, w] (лівий верхній кут і ширина в пікселях запису) під аспект a; без focus — повна висота по центру
+function focusBox(scr, focus, a) {
+  const maxW = Math.min(scr.width, scr.height * a);
+  const [fx, fy, fw] = focus ?? [(scr.width - maxW) / 2, 0, maxW];
+  const w = Math.min(even(Math.min(fw, maxW)), scr.width), h = Math.min(even(w / a), scr.height);
+  const clampTo = (v, max) => Math.max(0, Math.min(v, max));
+  return { w, h, x: evenPos(clampTo(fx, scr.width - w)), y: evenPos(clampTo(fy, scr.height - h)) };
+}
+
+const trimAt = (g, off = 0) => off
+  ? `trim=start=${(g.start + off).toFixed(3)}:end=${(g.end + off).toFixed(3)},setpts=PTS-STARTPTS`
+  : `trim=start=${g.start}:end=${g.end},setpts=PTS-STARTPTS`;
+
+// sync: { head, screenOffset } — зсуви файлів відносно шкали мікрофона; scr — розміри запису екрана (формат 2, спліт)
+const segVideo = (g, i, src, edit, W, H, sync = {}, scr) => {
+  if (!scr) {
+    const c = cropBox(src, edit.cropX ?? 0.5, g.zoom ?? 1);
+    return `[v${i}]${trimAt(g, sync.head)},crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${W}:${H}:flags=lanczos,setsar=1,fps=${FPS}[sv${i}]`;
+  }
+  // спліт: екран зверху, голова знизу, жовта лінія на стику
+  const sh = even(H / 2), hh = H - sh;
+  const c = cropBox(src, g.headX ?? edit.headX ?? 0.5, g.zoom ?? 1, W / hh);
+  const f = focusBox(scr, g.focus ?? edit.focus, W / sh);
+  const line = Math.max(2, even(H / 480));
+  return [
+    `[v${i}]${trimAt(g, sync.head)},crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${W}:${hh}:flags=lanczos,setsar=1,fps=${FPS}[hv${i}]`,
+    `[s${i}]${trimAt(g, sync.screenOffset)},crop=${f.w}:${f.h}:${f.x}:${f.y},scale=${W}:${sh}:flags=lanczos,setsar=1,fps=${FPS}[tv${i}]`,
+    `[tv${i}][hv${i}]vstack,drawbox=x=0:y=${sh - line / 2}:w=${W}:h=${line}:color=0xFFD200:t=fill[sv${i}]`,
+  ].join(';\n');
 };
 
 // лише склейки + zoom, без звуку й накладань — вхід для маски людини
-function baseGraph({ edit, segs, src, W, H }) {
+function baseGraph({ edit, segs, src, W, H, sync = {} }) {
   return [`[0:v]split=${segs.length}${segs.map((_, i) => `[v${i}]`).join('')}`,
-    ...segs.map((g, i) => segVideo(g, i, src, edit, W, H)),
+    ...segs.map((g, i) => segVideo(g, i, src, edit, W, H, sync)),
     `${segs.map((_, i) => `[sv${i}]`).join('')}concat=n=${segs.length}:v=1:a=0,format=rgb24[vb]`].join(';\n');
 }
 
-function buildGraph({ edit, segs, src, total, W, H, audioOnly, voiceGainDb = 0, icons = [], musicIdx, brolls = [], matteIdx, cutaways = [] }) {
+// aIdx — вхід зі звуком голосу (окремий мікрофон або сам source); scrIdx/scr — запис екрана для спліту
+function buildGraph({ edit, segs, src, total, W, H, audioOnly, voiceGainDb = 0, icons = [], musicIdx, brolls = [], matteIdx, cutaways = [],
+  aIdx = 0, sync = {}, scrIdx, scr }) {
   const N = segs.length;
   const f = [];
   const k = W / 1080;
-  f.push(`[0:a]asplit=${N}${segs.map((_, i) => `[a${i}]`).join('')}`);
+  f.push(`[${aIdx}:a]asplit=${N}${segs.map((_, i) => `[a${i}]`).join('')}`);
   if (!audioOnly) f.push(`[0:v]split=${N}${segs.map((_, i) => `[v${i}]`).join('')}`);
+  // екран коротший за мовлення → тримаємо останній кадр, щоб vstack не зупинився
+  if (!audioOnly && scr) f.push(`[${scrIdx}:v]tpad=stop_mode=clone:stop_duration=30,split=${N}${segs.map((_, i) => `[s${i}]`).join('')}`);
   segs.forEach((g, i) => {
     const d = g.end - g.start;
     f.push(`[a${i}]atrim=start=${g.start}:end=${g.end},asetpts=PTS-STARTPTS,afade=t=in:d=0.02,afade=t=out:st=${Math.max(0, d - 0.02).toFixed(3)}:d=0.02[sa${i}]`);
-    if (!audioOnly) f.push(segVideo(g, i, src, edit, W, H));
+    if (!audioOnly) f.push(segVideo(g, i, src, edit, W, H, sync, scr));
   });
   if (audioOnly) f.push(`${segs.map((_, i) => `[sa${i}]`).join('')}concat=n=${N}:v=0:a=1[ac]`);
   else f.push(`${segs.map((_, i) => `[sv${i}][sa${i}]`).join('')}concat=n=${N}:v=1:a=1[vc][ac]`);
@@ -338,12 +430,13 @@ function renderBroll(dir, project, props) {
 }
 
 // маска людини 432×768 лише на відрізках b-roll (+0.5 с розгону RVM); кеш за склейками й відрізками
-async function ensureMatte(dir, source, edit, segs, src, brolls) {
+async function ensureMatte(dir, source, edit, segs, src, brolls, sync = {}) {
   const ranges = brolls.map((b) => [Math.max(0, Math.floor((b.t - 0.5) * FPS)), Math.ceil((b.t + b.dur) * FPS)]);
-  const file = path.join(dir, `matte_${sha(JSON.stringify([edit.source, edit.cropX, segs, ranges]))}.mkv`);
+  const key = sync.head ? [edit.source, edit.cropX, segs, ranges, sync.head] : [edit.source, edit.cropX, segs, ranges];
+  const file = path.join(dir, `matte_${sha(JSON.stringify(key))}.mkv`);
   if (fs.existsSync(file)) return file;
   const [w, h] = [432, 768];
-  fs.writeFileSync(path.join(dir, 'graph_base.txt'), baseGraph({ edit, segs, src, W: w, H: h }));
+  fs.writeFileSync(path.join(dir, 'graph_base.txt'), baseGraph({ edit, segs, src, W: w, H: h, sync }));
   const { makeMatte } = await import('./matte.mjs');
   await makeMatte(ffmpeg(), ['-v', 'error', '-i', source, '-/filter_complex', 'graph_base.txt', '-map', '[vb]', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
     file + '.tmp.mkv', { w, h, fps: FPS, cwd: dir, ranges });
@@ -364,17 +457,28 @@ async function render(editPath, preview) {
   const total = segs.at(-1).off + segs.at(-1).end - segs.at(-1).start;
   const [W, H] = preview ? [540, 960] : [1080, 1920];
 
+  // формат 2: окремий мікрофон (головна шкала часу) і запис екрана; зсуви — з sync.json від prep, edit.sync їх перекриває
+  const syncFile = path.join(dir, 'sync.json');
+  const sync = { ...(fs.existsSync(syncFile) ? JSON.parse(fs.readFileSync(syncFile, 'utf8')) : {}), ...edit.sync };
+  if (!edit.audio) sync.head = 0; // без мікрофона шкала = сама камера
+  const audioFile = edit.audio && path.resolve(project, edit.audio);
+  const screenFile = edit.screen && edit.layout !== 'head' ? path.resolve(project, edit.screen) : null;
+  const scr = screenFile ? probe(screenFile) : undefined;
+  if (scr) console.log(`спліт: екран зверху, камера знизу; зсуви камера ${sync.head ?? 0} с, екран ${sync.screenOffset ?? 0} с`);
+
   fs.writeFileSync(path.join(dir, 'subs.ass'), '\ufeff' + buildAss(edit, segs, words, total));
 
   // прохід 1: міряємо гучність голосу після обробки → підганяємо до -14 LUFS
   fs.writeFileSync(path.join(dir, 'graph_audio.txt'), buildGraph({ edit, segs, src, total, W, H, audioOnly: true }));
-  const m = run(ffmpeg(), ['-hide_banner', '-i', source, '-/filter_complex', 'graph_audio.txt', '-map', '[aout]', '-f', 'null', '-'], { cwd: dir }).stderr;
+  const m = run(ffmpeg(), ['-hide_banner', '-i', audioFile ?? source, '-/filter_complex', 'graph_audio.txt', '-map', '[aout]', '-f', 'null', '-'], { cwd: dir }).stderr;
   const meas = JSON.parse(m.slice(m.lastIndexOf('{'), m.lastIndexOf('}') + 1));
   const voiceGainDb = -14 - Number(meas.input_i);
   console.log(`голос: ${meas.input_i} LUFS → підсилення ${voiceGainDb.toFixed(1)} дБ`);
 
   const inputs = ['-i', source];
-  let idx = 1;
+  let idx = 1, aIdx = 0, scrIdx;
+  if (audioFile) { inputs.push('-i', audioFile); aIdx = idx++; }
+  if (scr) { inputs.push('-i', screenFile); scrIdx = idx++; }
   const icons = [];
   for (const ic of edit.icons ?? []) {
     const t = mapTime(segs, ic.at);
@@ -386,7 +490,8 @@ async function render(editPath, preview) {
   }
   const brolls = [];
   let matteIdx;
-  for (const b of edit.broll ?? []) {
+  if (scr && edit.broll?.length) console.warn('у спліті b-roll «за спиною» вимкнено (людина лише в нижній половині)');
+  for (const b of scr ? [] : edit.broll ?? []) {
     const t = mapTime(segs, b.at);
     if (t == null) { console.warn('b-roll у вирізаному шматку, пропускаю:', b.at); continue; }
     const dur = r2(Math.min(b.dur ?? 3, total - t));
@@ -394,7 +499,7 @@ async function render(editPath, preview) {
     brolls.push({ t, dur, idx: idx++ });
   }
   if (brolls.length) {
-    inputs.push('-i', await ensureMatte(dir, source, edit, segs, src, brolls));
+    inputs.push('-i', await ensureMatte(dir, source, edit, segs, src, brolls, sync));
     matteIdx = idx++;
   }
   const cutaways = [];
@@ -417,8 +522,8 @@ async function render(editPath, preview) {
     musicIdx = idx++;
   } else if (edit.music?.file) console.warn('музику не знайдено, рендер без неї:', edit.music.file);
 
-  fs.writeFileSync(path.join(dir, 'graph.txt'), buildGraph({ edit, segs, src, total, W, H, voiceGainDb, icons, musicIdx, brolls, matteIdx, cutaways }));
-  const name = path.parse(edit.source).name;
+  fs.writeFileSync(path.join(dir, 'graph.txt'), buildGraph({ edit, segs, src, total, W, H, voiceGainDb, icons, musicIdx, brolls, matteIdx, cutaways, aIdx, sync, scrIdx, scr }));
+  const name = path.basename(dir); // назва роботи: для формату 2 — без « Head»
   const out = preview ? path.join(dir, 'preview.mp4') : path.join(project, 'out', `${name}_final.mp4`);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   const venc = preview ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28']
@@ -476,12 +581,26 @@ function selftest() {
   assert.match(gc, /\[ve\]\[cw0\]overlay=eof_action=pass:format=auto\[cut0\];\n\[cut0\]subtitles/);
   assert.match(gc, /\[2:a\]adelay=delays=800:all=1/);
   assert.match(gc, /\[vo\]\[duck\]\[sfx0\]amix=inputs=3/);
+  // синхронізація: b — шматок a, що починається з 123-го відліку
+  const sig = Float32Array.from({ length: 2000 }, (_, i) => Math.sin(i * 0.37) * Math.sin(i * 0.011) + (i % 97 === 0 ? 3 : 0));
+  assert.equal(xcorrLag(sig, sig.slice(123, 1500), -300, 300), 123);
+  // спліт: зсуви у trim, екран з tpad, vstack, звук з окремого входу мікрофона
+  const gs = buildGraph({ edit: { screen: 's.mp4' }, segs, src: { width: 1920, height: 1080 }, total: 3, W: 1080, H: 1920,
+    aIdx: 1, scrIdx: 2, scr: { width: 1920, height: 1080 }, sync: { head: 22.1, screenOffset: 2.03 } });
+  assert.match(gs, /^\[1:a\]asplit=2/);
+  assert.match(gs, /\[2:v\]tpad=stop_mode=clone:stop_duration=30,split=2\[s0\]\[s1\]/);
+  assert.match(gs, /\[v0\]trim=start=23\.100:end=25\.100,setpts=PTS-STARTPTS,crop=1216:1080:352:0,scale=1080:960/);
+  assert.match(gs, /\[s0\]trim=start=3\.030:end=5\.030,setpts=PTS-STARTPTS,crop=1216:1080:352:0,scale=1080:960/);
+  assert.match(gs, /\[tv0\]\[hv0\]vstack,drawbox=x=0:y=958:w=1080:h=4/);
+  assert.match(gs, /\[a0\]atrim=start=1:end=3/);
+  assert.deepEqual(focusBox({ width: 1920, height: 1080 }, [1500, 900, 800], 1.125), { w: 800, h: 712, x: 1120, y: 368 });
   assert.match(baseGraph({ edit: {}, segs, src: { width: 1080, height: 1920 }, W: 720, H: 1280 }), /concat=n=2:v=1:a=0,format=rgb24\[vb\]$/);
   console.log('selftest ok');
 }
 
 const [cmd, arg, ...rest] = process.argv.slice(2);
-if (cmd === 'prep' && arg) prep(arg, rest[0]);
+const flag = (n) => { const i = rest.indexOf(n); return i >= 0 ? rest.splice(i, 2)[1] : undefined; };
+if (cmd === 'prep' && arg) { const audio = flag('--audio'), screen = flag('--screen'); prep(arg, rest[0], { audio, screen }); }
 else if (cmd === 'preview' && arg) await render(arg, true);
 else if (cmd === 'render' && arg) await render(arg, false);
 else if (cmd === 'selftest') selftest();

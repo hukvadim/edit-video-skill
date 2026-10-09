@@ -1,0 +1,185 @@
+{
+  "source": "VID_20260608_165802.mp4",
+  "segments": [
+    {
+      "start": 28.13,
+      "end": 29.49,
+      "zoom": 1
+    },
+    {
+      "start": 29.81,
+      "end": 34.36,
+      "zoom": 1.12
+    },
+    {
+      "start": 34.62,
+      "end": 37.5,
+      "zoom": 1
+    },
+    {
+      "start": 37.77,
+      "end": 43.17,
+      "zoom": 1.12
+    },
+    {
+      "start": 43.39,
+      "end": 46.39,
+      "zoom": 1
+    },
+    {
+      "start": 46.61,
+      "end": 49.69,
+      "zoom": 1.12
+    },
+    {
+      "start": 50.01,
+      "end": 57.27,
+      "zoom": 1
+    },
+    {
+      "start": 57.44,
+      "end": 59.71,
+      "zoom": 1.12
+    },
+    {
+      "start": 60.01,
+      "end": 63.29,
+      "zoom": 1
+    },
+    {
+      "start": 63.57,
+      "end": 65.66,
+      "zoom": 1.12
+    },
+    {
+      "start": 65.95,
+      "end": 70.06,
+      "zoom": 1
+    },
+    {
+      "start": 70.27,
+      "end": 72.68,
+      "zoom": 1.12
+    },
+    {
+      "start": 72.88,
+      "end": 75.95,
+      "zoom": 1
+    }
+  ],
+  "title": {
+    "text": "Що питатимуть на співбесіді?",
+    "dur": 2.6
+  },
+  "callouts": [
+    {
+      "at": 34.7,
+      "dur": 2.4,
+      "text": "+ питання про *AI*"
+    },
+    {
+      "at": 39,
+      "dur": 3.4,
+      "text": "Не пише кожен рядок — *працює з AI*"
+    },
+    {
+      "at": 46.7,
+      "dur": 2.8,
+      "text": "*Правильне* запитання + *перевірка*"
+    },
+    {
+      "at": 57.7,
+      "dur": 1.9,
+      "text": "Мінімум *1 місяць*"
+    },
+    {
+      "at": 70.4,
+      "dur": 2.2,
+      "text": "Вадим Гук · *викладач програмування*"
+    },
+    {
+      "at": 73,
+      "dur": 2.9,
+      "text": "Пиши в *Telegram*"
+    }
+  ],
+  "music": {
+    "file": "assets/music/mixkit-282.mp3",
+    "volume": 0.4
+  },
+  "broll": [
+    {
+      "at": 34.7,
+      "dur": 2.8,
+      "layout": "fan",
+      "images": [
+        "ai-site.webp",
+        "site-3-days.webp"
+      ]
+    },
+    {
+      "at": 55,
+      "dur": 2.5,
+      "layout": "fly",
+      "images": [
+        "folders-html-css-js.jpg",
+        "vs-code.webp",
+        "first-project.jpg"
+      ]
+    },
+    {
+      "at": 62,
+      "dur": 3.4,
+      "layout": "fly",
+      "images": [
+        "git-github.webp",
+        "github-pages.jpg",
+        "favicon.webp"
+      ]
+    },
+    {
+      "at": 70.35,
+      "dur": 2.4,
+      "layout": "wall",
+      "images": [
+        "ai-site.webp",
+        "site-3-days.webp",
+        "git-github.webp",
+        "favicon.webp",
+        "github-pages.jpg",
+        "first-project.jpg",
+        "how-to-watch.jpg",
+        "folders-html-css-js.jpg",
+        "vs-code.webp"
+      ]
+    }
+  ],
+  "cutaways": [
+    {
+      "at": 31,
+      "dur": 3,
+      "file": "assets/stock/handshake.mp4",
+      "from": 1
+    },
+    {
+      "at": 39.9,
+      "dur": 3.2,
+      "file": "assets/stock/programmer-hands.mp4",
+      "from": 2,
+      "cropX": 0.62
+    },
+    {
+      "at": 66.1,
+      "dur": 3.6,
+      "file": "assets/stock/programmer-big-pc.mp4",
+      "from": 1.5
+    }
+  ],
+  "site": "devguide.com.ua",
+  "avoid": [
+    760,
+    800,
+    320,
+    1120
+  ]
+}

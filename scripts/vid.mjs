@@ -13,7 +13,8 @@ const FPS = 30;
 const ACCENT = '&H0000D2FF'; // #FFD200 у форматі ASS (BGR)
 // Windows: системний Segoe UI Black; macOS/Linux: Montserrat Black з fonts/ (OFL), обидва з кирилицею
 const FONT = IS_WIN ? 'Segoe UI Black' : 'Montserrat Black';
-const SPLIT_STYLE = { subY: 915, titleY: 780, calloutY: 150 };
+const SPLIT_STYLE = { subY: 915, titleY: 780, calloutY: 230 };
+const TEXT_H = 560; // висота смуги кінетичного тексту (у кадрі 1080×1920)
 
 // ---------- утиліти ----------
 let _ff, _fp;
@@ -223,20 +224,37 @@ function buildAss(edit, segs, words, total) {
   const dlg = (s, e, style, text) => ev.push(`Dialogue: 0,${assTime(s)},${assTime(e)},${style},,0,0,0,,${text}`);
 
   // розбиваємо по сирому тексту (там ще є коми/крапки), а показуємо очищений
+  const clean = (edit.captions?.style ?? 'clean') === 'clean';
+  const accent = assColor(edit.captions?.accent ?? '#FFD200');
+  const emph = (edit.captions?.emphasis ?? []).map((x) => x.toLowerCase());
+  const isEmph = (w) => emph.some((x) => w.toLowerCase().startsWith(x));
+  const show = (w) => (clean ? subWord(w).toLowerCase() : subWord(w));
   const chunks = chunkWords(mapWords(segs, words).filter((w) => subWord(w.w)))
-    .map((c) => c.map((w) => ({ ...w, w: subWord(w.w) })));
+    .map((c) => c.map((w) => ({ ...w, raw: w.w, w: show(w.w) })));
   chunks.forEach((c, ci) => {
     const nextStart = chunks[ci + 1]?.[0].s ?? total;
     c.forEach((w, j) => {
-      const s = j === 0 ? w.s : w.s;
+      const s = w.s;
       const e = j < c.length - 1 ? c[j + 1].s : Math.min(w.e + 0.25, nextStart);
-      const text = c.map((x, k) => k === j
-        ? `{\\c${ACCENT}&\\fscx118\\fscy118\\t(0,90,\\fscx100\\fscy100)}${assEsc(x.w)}{\\r}`
-        : assEsc(x.w)).join(' ');
-      dlg(s, Math.max(e, s + 0.05), 'Sub', text);
+      const text = clean
+        // clean: слова з'являються по одному (майбутні — прозорі, тож рядок не стрибає), нове слово «вспливає» з розмиття;
+        // ключові слова (captions.emphasis) — акцентним кольором і трохи більші
+        ? c.map((x, k) => {
+          const em = isEmph(x.raw), col = em ? `\\c${accent}&` : '', big = em ? 112 : 100;
+          if (k > j) return `{\\alpha&HFF&}${assEsc(x.w)}`;
+          if (k < j) return `{\\alpha&H00&${col}${em ? '\\fscx112\\fscy112' : ''}}${assEsc(x.w)}{\\r}`;
+          const from = Math.round(big * 0.82);
+          return `{\\alpha&H00&${col}\\fscx${from}\\fscy${from}\\frz-2\\t(0,140,\\fscx${big}\\fscy${big}\\frz0)}${assEsc(x.w)}{\\r}`;
+        }).join(' ')
+        : c.map((x, k) => k === j
+          ? `{\\c${ACCENT}&\\fscx118\\fscy118\\t(0,90,\\fscx100\\fscy100)}${assEsc(x.w)}{\\r}`
+          : assEsc(x.w)).join(' ');
+      dlg(s, Math.max(e, s + 0.05), clean ? 'Clean' : 'Sub', clean ? `{\\blur4}${text}` : text);
     });
   });
 
+  // титул і плашки: classic — плашки ASS; інакше їх малює Remotion (кінетичний текст, див. renderText)
+  if (edit.textStyle !== 'classic') return assDoc(st, ev);
   if (edit.title?.text) {
     const d = edit.title.dur ?? 2.5;
     dlg(0.05, d, 'Title', `{\\pos(540,${st.titleY})\\fad(150,250)\\fscx70\\fscy70\\t(0,220,\\fscx100\\fscy100)}${assEsc(edit.title.text)}`);
@@ -248,7 +266,13 @@ function buildAss(edit, segs, words, total) {
     const text = assEsc(c.text).replace(/\*([^*]+)\*/g, `{\\c${ACCENT}&}$1{\\r}`);
     dlg(t, Math.min(t + (c.dur ?? 2), total), 'Callout', `{\\move(1500,${y},540,${y},0,260)\\fad(0,200)}${text}`);
   }
+  return assDoc(st, ev);
+}
 
+// '#RRGGBB' → ASS '&HBBGGRR'
+const assColor = (hex) => `&H${hex.slice(5, 7)}${hex.slice(3, 5)}${hex.slice(1, 3)}`.toUpperCase();
+
+function assDoc(st, ev) {
   return `[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -259,6 +283,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Sub,${FONT},82,&H00FFFFFF,&H000000FF,&H00000000,&H90000000,0,0,0,0,100,100,0,0,1,7,3,2,80,80,${st.subY},1
+Style: Clean,Montserrat ExtraBold,84,&H00FFFFFF,&H000000FF,&H50000000,&H70000000,0,0,0,0,100,100,0,0,1,5,4,2,70,70,${st.subY},1
 Style: Title,${FONT},96,&H00141414,&H000000FF,&HFF000000,${ACCENT},0,0,0,0,100,100,0,0,4,28,0,5,90,90,0,1
 Style: Callout,${FONT},76,&H00FFFFFF,&H000000FF,&HFF000000,&H28141414,0,0,0,0,100,100,0,0,4,24,0,5,110,110,0,1
 
@@ -277,6 +302,15 @@ function cropBox(src, cropX = 0.5, zoom = 1, a = 9 / 16) {
   const w = bw / zoom, h = bh / zoom;
   const W2 = Math.min(even(w), src.width), H2 = Math.min(even(h), src.height);
   return { w: W2, h: H2, x: Math.min(evenPos(bx + (bw - w) / 2), src.width - W2), y: Math.min(evenPos(by + (bh - h) * 0.4), src.height - H2) };
+}
+
+// кадр голови під аспект a: face = [x, y] центру обличчя (частки кадру камери) — обличчя стає по центру по X
+// і на ~38% висоти; zoom > 1 відрізає краї (1.25 ≈ по 10% з кожного боку від повновисотного кропу)
+function headBox(src, face = [0.5, 0.35], zoom = 1.25, a = 9 / 16) {
+  const bw = Math.min(src.width, src.height * a);
+  const w = Math.min(even(bw / zoom), src.width), h = Math.min(even(w / a), src.height);
+  const clampTo = (v, max) => Math.max(0, Math.min(v, max));
+  return { w, h, x: evenPos(clampTo(face[0] * src.width - w / 2, src.width - w)), y: evenPos(clampTo(face[1] * src.height - h * 0.38, src.height - h)) };
 }
 
 // координати в просторі 1080×1920 (S — розмір іконки там же)
@@ -307,16 +341,18 @@ const segVideo = (g, i, src, edit, W, H, sync = {}, scr) => {
     const c = cropBox(src, edit.cropX ?? 0.5, g.zoom ?? 1);
     return `[v${i}]${trimAt(g, sync.head)},crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${W}:${H}:flags=lanczos,setsar=1,fps=${FPS}[sv${i}]`;
   }
-  // спліт: екран зверху, голова знизу, жовта лінія на стику
+  // спліт: екран зверху [tv], голова знизу [hv] — склеюються окремими потоками (голові потім розмиваємо фон)
   const sh = even(H / 2), hh = H - sh;
-  const c = cropBox(src, g.headX ?? edit.headX ?? 0.5, g.zoom ?? 1, W / hh);
   const f = focusBox(scr, g.focus ?? edit.focus, W / sh);
-  const line = Math.max(2, even(H / 480));
-  return [
-    `[v${i}]${trimAt(g, sync.head)},crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${W}:${hh}:flags=lanczos,setsar=1,fps=${FPS}[hv${i}]`,
+  return [headSeg(g, i, src, edit, sync, W, hh, FPS),
     `[s${i}]${trimAt(g, sync.screenOffset)},crop=${f.w}:${f.h}:${f.x}:${f.y},scale=${W}:${sh}:flags=lanczos,setsar=1,fps=${FPS}[tv${i}]`,
-    `[tv${i}][hv${i}]vstack,drawbox=x=0:y=${sh - line / 2}:w=${W}:h=${line}:color=0xFFD200:t=fill[sv${i}]`,
   ].join(';\n');
+};
+
+// кадр голови для нижньої половини спліту: обличчя по центру, базове наближення headZoom × чергування zoom
+const headSeg = (g, i, src, edit, sync, w, h, fps) => {
+  const c = headBox(src, g.face ?? edit.face, (edit.headZoom ?? 1.25) * (g.zoom ?? 1), w / h);
+  return `[v${i}]${trimAt(g, sync.head)},crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${w}:${h}:flags=lanczos,setsar=1,fps=${fps}[hv${i}]`;
 };
 
 // лише склейки + zoom, без звуку й накладань — вхід для маски людини
@@ -326,9 +362,16 @@ function baseGraph({ edit, segs, src, W, H, sync = {} }) {
     `${segs.map((_, i) => `[sv${i}]`).join('')}concat=n=${segs.length}:v=1:a=0,format=rgb24[vb]`].join(';\n');
 }
 
+// спліт: лише нижня половина (голова) у малій роздільності й 15 fps — вхід для маски розмиття фону
+function headBaseGraph({ edit, segs, src, w, h, sync = {} }) {
+  return [`[0:v]split=${segs.length}${segs.map((_, i) => `[v${i}]`).join('')}`,
+    ...segs.map((g, i) => headSeg(g, i, src, edit, sync, w, h, 15)),
+    `${segs.map((_, i) => `[hv${i}]`).join('')}concat=n=${segs.length}:v=1:a=0,format=rgb24[vb]`].join(';\n');
+}
+
 // aIdx — вхід зі звуком голосу (окремий мікрофон або сам source); scrIdx/scr — запис екрана для спліту
 function buildGraph({ edit, segs, src, total, W, H, audioOnly, voiceGainDb = 0, icons = [], musicIdx, brolls = [], matteIdx, cutaways = [],
-  aIdx = 0, sync = {}, scrIdx, scr }) {
+  aIdx = 0, sync = {}, scrIdx, scr, headMatteIdx, texts = [] }) {
   const N = segs.length;
   const f = [];
   const k = W / 1080;
@@ -342,7 +385,23 @@ function buildGraph({ edit, segs, src, total, W, H, audioOnly, voiceGainDb = 0, 
     if (!audioOnly) f.push(segVideo(g, i, src, edit, W, H, sync, scr));
   });
   if (audioOnly) f.push(`${segs.map((_, i) => `[sa${i}]`).join('')}concat=n=${N}:v=0:a=1[ac]`);
-  else f.push(`${segs.map((_, i) => `[sv${i}][sa${i}]`).join('')}concat=n=${N}:v=1:a=1[vc][ac]`);
+  else if (!scr) f.push(`${segs.map((_, i) => `[sv${i}][sa${i}]`).join('')}concat=n=${N}:v=1:a=1[vc][ac]`);
+  else {
+    const sh = even(H / 2), hh = H - sh, line = Math.max(2, even(H / 480));
+    f.push(`${segs.map((_, i) => `[tv${i}][hv${i}][sa${i}]`).join('')}concat=n=${N}:v=2:a=1[vtop][vhead][ac]`);
+    let head = 'vhead';
+    if (headMatteIdx != null) {
+      // розмитий фон за людиною: різка людина (маска RVM) поверх розмитої копії кадру
+      f.push(`[vhead]split[hs][hb]`);
+      f.push(`[hb]gblur=sigma=${(16 * k).toFixed(1)},eq=brightness=-0.04:saturation=0.85[hbl]`);
+      f.push(`[${headMatteIdx}:v]fps=${FPS},scale=${W}:${hh},format=gray[hm]`);
+      f.push(`[hs][hm]alphamerge[hp]`);
+      f.push(`[hbl][hp]overlay=format=auto[hfx]`);
+      head = 'hfx';
+    }
+    // жовта лінія на стику — лише за бажанням (seamLine: true): без неї субтитри на стику виглядають чистіше
+    f.push(`[vtop][${head}]vstack${edit.seamLine ? `,drawbox=x=0:y=${sh - line / 2}:w=${W}:h=${line}:color=0xFFD200:t=fill` : ''}[vc]`);
+  }
 
   const voice = `highpass=f=80,afftdn=nf=-25,equalizer=f=3000:t=q:w=1:g=2,acompressor=threshold=-20dB:ratio=3:attack=5:release=120:makeup=2`;
   if (audioOnly) { f.push(`[ac]${voice},loudnorm=print_format=json[aout]`); return f.join(';\n'); }
@@ -399,8 +458,14 @@ function buildGraph({ edit, segs, src, total, W, H, audioOnly, voiceGainDb = 0, 
     f.push(`[${last}][ic${i}]overlay=x=${x}:y='${y}+40*max(0,1-(t-${ic.t.toFixed(3)})/0.3)':enable='between(t,${ic.t.toFixed(3)},${(ic.t + ic.dur).toFixed(3)})':eof_action=pass[vi${i}]`);
     last = `vi${i}`;
   });
-  const fontsdir = IS_WIN ? '' : `:fontsdir='${path.join(TOOL, 'fonts')}'`;
-  f.push(`[${last}]subtitles=subs.ass${fontsdir},fade=t=in:d=0.3,fade=t=out:st=${(total - 0.4).toFixed(3)}:d=0.4,format=yuv420p[vout]`);
+  // кінетичний текст (титул, плашки) з Remotion: смуга 1080×TEXT_H, ставиться центром на y
+  texts.forEach((t, i) => {
+    f.push(`[${t.idx}:v]setpts=PTS-STARTPTS+${t.t.toFixed(3)}/TB[kt${i}]`);
+    f.push(`[${last}][kt${i}]overlay=x=0:y=${Math.round((t.y - TEXT_H / 2) * k)}:eof_action=pass:format=auto[kx${i}]`);
+    last = `kx${i}`;
+  });
+  // шрифти субтитрів копіюються в work/<назва>/fonts (відносний шлях — без екранування «C:» у графі)
+  f.push(`[${last}]subtitles=subs.ass:fontsdir=fonts,fade=t=in:d=0.3,fade=t=out:st=${(total - 0.4).toFixed(3)}:d=0.4,format=yuv420p[vout]`);
   return f.join(';\n');
 }
 
@@ -416,14 +481,22 @@ function hasQsv() {
 const sha = (x) => createHash('sha1').update(x).digest('hex').slice(0, 10);
 
 // прозорий кліп Remotion (ProRes 4444); картинки беруться з <проєкт>/assets/covers; кеш за props + кодом композиції
-function renderBroll(dir, project, props) {
-  const code = fs.readFileSync(path.join(TOOL, 'motion/Broll.tsx'), 'utf8');
-  const file = path.join(dir, `broll_${sha(JSON.stringify(props) + code)}.mov`);
+const renderBroll = (dir, project, props) => renderMotion(dir, project, 'Broll', props);
+
+// кінетичний текст: "підводка *акцент*" → top = поза зірочками, big = в зірочках (без зірочок — усе велике)
+function kineticProps(text) {
+  const m = text.match(/^(.*?)\*([^*]+)\*(.*)$/);
+  return m ? { top: (m[1] + ' ' + m[3]).trim(), big: m[2].trim() } : { top: '', big: text.trim() };
+}
+
+function renderMotion(dir, project, comp, props) {
+  const code = fs.readFileSync(path.join(TOOL, `motion/${comp}.tsx`), 'utf8');
+  const file = path.join(dir, `${comp.toLowerCase()}_${sha(JSON.stringify(props) + code)}.mov`);
   if (fs.existsSync(file)) return file;
   const propsFile = file.replace(/\.mov$/, '.json');
   fs.writeFileSync(propsFile, JSON.stringify(props));
-  console.log(`b-roll ${props.layout} (${props.dur} с)…`);
-  run(process.execPath, [path.join(TOOL, 'node_modules/@remotion/cli/remotion-cli.js'), 'render', 'motion/index.ts', 'Broll', file,
+  console.log(`${comp} ${props.layout ?? props.variant} (${props.dur} с)…`);
+  run(process.execPath, [path.join(TOOL, 'node_modules/@remotion/cli/remotion-cli.js'), 'render', 'motion/index.ts', comp, file,
     `--props=${propsFile}`, '--codec=prores', '--prores-profile=4444', '--image-format=png', '--pixel-format=yuva444p10le',
     `--public-dir=${path.join(project, 'assets')}`, '--log=error'], { cwd: TOOL });
   return file;
@@ -440,6 +513,21 @@ async function ensureMatte(dir, source, edit, segs, src, brolls, sync = {}) {
   const { makeMatte } = await import('./matte.mjs');
   await makeMatte(ffmpeg(), ['-v', 'error', '-i', source, '-/filter_complex', 'graph_base.txt', '-map', '[vb]', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
     file + '.tmp.mkv', { w, h, fps: FPS, cwd: dir, ranges });
+  fs.renameSync(file + '.tmp.mkv', file);
+  return file;
+}
+
+// маска голови для спліту: 384×342, 15 fps, на весь ролик (RVM на CPU ~1–3 кадри/с) — кеш за склейками й кадруванням
+async function ensureHeadMatte(dir, source, edit, segs, src, sync) {
+  const key = [edit.source, segs, edit.face, edit.headZoom, sync.head];
+  const file = path.join(dir, `headmatte_${sha(JSON.stringify(key))}.mkv`);
+  if (fs.existsSync(file)) return file;
+  const [w, h] = [384, 342];
+  fs.writeFileSync(path.join(dir, 'graph_head.txt'), headBaseGraph({ edit, segs, src, w, h, sync }));
+  const { makeMatte } = await import('./matte.mjs');
+  console.log('маска голови для розмиття фону (один раз, далі з кешу)…');
+  await makeMatte(ffmpeg(), ['-v', 'error', '-i', source, '-/filter_complex', 'graph_head.txt', '-map', '[vb]', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+    file + '.tmp.mkv', { w, h, fps: 15, cwd: dir, ratio: 0.6 });
   fs.renameSync(file + '.tmp.mkv', file);
   return file;
 }
@@ -516,13 +604,40 @@ async function render(editPath, preview) {
     if (fs.existsSync(whoosh)) { inputs.push('-i', whoosh); cut.sfxIdx = idx++; }
     cutaways.push(cut);
   }
+  // спліт: маска людини на нижній половині → розмитий фон за головою (bgBlur: false — вимкнути)
+  let headMatteIdx;
+  if (scr && edit.bgBlur !== false) {
+    inputs.push('-i', await ensureHeadMatte(dir, source, edit, segs, src, sync));
+    headMatteIdx = idx++;
+  }
+  // кінетичний текст (Remotion) замість ASS-плашок; textStyle: "classic" повертає старі плашки
+  const texts = [];
+  if (edit.textStyle !== 'classic') {
+    const split = !!scr;
+    const st = { subY: 520, calloutY: 330, titleY: 360, ...(split ? SPLIT_STYLE : {}), ...edit.style };
+    const accent = edit.captions?.accent ?? '#FFD200';
+    const add = (t, dur, y, variant, text) => {
+      inputs.push('-i', renderMotion(dir, project, 'Kinetic', { ...kineticProps(text), variant, accent, dur: r2(Math.min(dur, total - t)), w: W }));
+      texts.push({ t, y, idx: idx++ });
+    };
+    if (edit.title?.text) add(0.05, edit.title.dur ?? 2.5, st.titleY, 'title', edit.title.text);
+    for (const c of edit.callouts ?? []) {
+      const t = mapTime(segs, c.at);
+      if (t == null) { console.warn('плашка у вирізаному шматку, пропускаю:', c.text); continue; }
+      add(t, c.dur ?? 2, c.y ?? st.calloutY, 'callout', c.text);
+    }
+  }
+  // шрифти субтитрів поруч із subs.ass (fontsdir=fonts у графі)
+  fs.mkdirSync(path.join(dir, 'fonts'), { recursive: true });
+  for (const f of fs.readdirSync(path.join(TOOL, 'fonts')).filter((x) => x.endsWith('.ttf'))) fs.copyFileSync(path.join(TOOL, 'fonts', f), path.join(dir, 'fonts', f));
+
   let musicIdx = null;
   if (edit.music?.file && fs.existsSync(path.resolve(project, edit.music.file))) {
     inputs.push('-stream_loop', '-1', '-i', path.resolve(project, edit.music.file));
     musicIdx = idx++;
   } else if (edit.music?.file) console.warn('музику не знайдено, рендер без неї:', edit.music.file);
 
-  fs.writeFileSync(path.join(dir, 'graph.txt'), buildGraph({ edit, segs, src, total, W, H, voiceGainDb, icons, musicIdx, brolls, matteIdx, cutaways, aIdx, sync, scrIdx, scr }));
+  fs.writeFileSync(path.join(dir, 'graph.txt'), buildGraph({ edit, segs, src, total, W, H, voiceGainDb, icons, musicIdx, brolls, matteIdx, cutaways, aIdx, sync, scrIdx, scr, headMatteIdx, texts }));
   const name = path.basename(dir); // назва роботи: для формату 2 — без « Head»
   const out = preview ? path.join(dir, 'preview.mp4') : path.join(project, 'out', `${name}_final.mp4`);
   fs.mkdirSync(path.dirname(out), { recursive: true });
@@ -560,10 +675,18 @@ function selftest() {
   assert.equal(subWord('«привіт,'), 'ПРИВІТ');
   assert.equal(subWord('так?'), 'ТАК?');
   assert.equal(chunkWords([1, 2, 3, 4].map((i) => ({ s: i, e: i + 0.5, w: 'ab' }))).length, 2);
-  const tg = buildAss({}, snapSegments([{ start: 0, end: 9 }], 30), ['Telegram,', 'будемо', 'кодити'].map((w, i) => ({ s: i, e: i + 0.9, w })), 9);
+  const tg = buildAss({ captions: { style: 'classic' } }, snapSegments([{ start: 0, end: 9 }], 30), ['Telegram,', 'будемо', 'кодити'].map((w, i) => ({ s: i, e: i + 0.9, w })), 9);
   assert.match(tg, /,Sub,,0,0,0,,\{[^}]*\}TELEGRAM\{\\r\}$/m); // кома розриває рядок перед «будемо»
   assert.equal(assTime(3725.456), '1:02:05.46');
-  const ass = buildAss({ title: { text: 'Hi {x}' }, callouts: [{ at: 2, text: 'є *ідея*' }] }, segs, [{ s: 1.1, e: 1.5, w: 'слово' }], 3);
+  // clean: малі літери, майбутні слова прозорі, ключове слово — акцентом; плашки не в ASS (їх малює Remotion)
+  const cl = buildAss({ captions: { emphasis: ['будем'] }, title: { text: 'T' } }, snapSegments([{ start: 0, end: 9 }], 30),
+    ['Пиши', 'будемо', 'кодити'].map((w, i) => ({ s: i, e: i + 0.9, w })), 9);
+  assert.match(cl, /,Clean,,0,0,0,,\{\\blur4\}\{\\alpha&H00&\\fscx82\\fscy82.*\}пиши\{\\r\} \{\\alpha&HFF&\}будемо$/m);
+  assert.match(cl, /\{\\alpha&H00&\\c&H00D2FF&\\fscx92\\fscy92\\frz-2\\t\(0,140,\\fscx112\\fscy112\\frz0\)\}будемо/);
+  assert.doesNotMatch(cl, /Dialogue: .*,Title,/);
+  assert.deepEqual(kineticProps('1 година → *сайт, який продав*'), { top: '1 година →', big: 'сайт, який продав' });
+  assert.deepEqual(kineticProps('Без акценту'), { top: '', big: 'Без акценту' });
+  const ass = buildAss({ textStyle: 'classic', captions: { style: 'classic' }, title: { text: 'Hi {x}' }, callouts: [{ at: 2, text: 'є *ідея*' }] }, segs, [{ s: 1.1, e: 1.5, w: 'слово' }], 3);
   assert.match(ass, /Dialogue: 0,0:00:00.10,0:00:00.75,Sub,.*СЛОВО/);
   assert.match(ass, /Title,,0,0,0,,.*Hi x$/m);
   assert.match(ass, /Callout.*є \{\\c&H0000D2FF&\}ідея\{\\r\}/);
@@ -586,12 +709,19 @@ function selftest() {
   assert.equal(xcorrLag(sig, sig.slice(123, 1500), -300, 300), 123);
   // спліт: зсуви у trim, екран з tpad, vstack, звук з окремого входу мікрофона
   const gs = buildGraph({ edit: { screen: 's.mp4' }, segs, src: { width: 1920, height: 1080 }, total: 3, W: 1080, H: 1920,
-    aIdx: 1, scrIdx: 2, scr: { width: 1920, height: 1080 }, sync: { head: 22.1, screenOffset: 2.03 } });
+    aIdx: 1, scrIdx: 2, scr: { width: 1920, height: 1080 }, sync: { head: 22.1, screenOffset: 2.03 }, headMatteIdx: 3,
+    texts: [{ t: 0.5, y: 230, idx: 4 }] });
   assert.match(gs, /^\[1:a\]asplit=2/);
   assert.match(gs, /\[2:v\]tpad=stop_mode=clone:stop_duration=30,split=2\[s0\]\[s1\]/);
-  assert.match(gs, /\[v0\]trim=start=23\.100:end=25\.100,setpts=PTS-STARTPTS,crop=1216:1080:352:0,scale=1080:960/);
+  // голова: обличчя по центру, наближення 1.25 (по ~10% з боків), кроп 972×864 замість 1216×1080
+  assert.match(gs, /\[v0\]trim=start=23\.100:end=25\.100,setpts=PTS-STARTPTS,crop=972:864:474:50,scale=1080:960/);
   assert.match(gs, /\[s0\]trim=start=3\.030:end=5\.030,setpts=PTS-STARTPTS,crop=1216:1080:352:0,scale=1080:960/);
-  assert.match(gs, /\[tv0\]\[hv0\]vstack,drawbox=x=0:y=958:w=1080:h=4/);
+  assert.match(gs, /concat=n=2:v=2:a=1\[vtop\]\[vhead\]\[ac\]/);
+  assert.match(gs, /\[3:v\]fps=30,scale=1080:960,format=gray\[hm\];\n\[hs\]\[hm\]alphamerge\[hp\];\n\[hbl\]\[hp\]overlay/);
+  assert.match(gs, /\[vtop\]\[hfx\]vstack\[vc\]/);
+  assert.match(buildGraph({ edit: { screen: 's', seamLine: true }, segs, src: { width: 1920, height: 1080 }, total: 3, W: 1080, H: 1920,
+    scrIdx: 1, scr: { width: 1920, height: 1080 } }), /\[vtop\]\[vhead\]vstack,drawbox=x=0:y=958:w=1080:h=4/);
+  assert.match(gs, /\[4:v\]setpts=PTS-STARTPTS\+0\.500\/TB\[kt0\];\n\[ve\]\[kt0\]overlay=x=0:y=-50/);
   assert.match(gs, /\[a0\]atrim=start=1:end=3/);
   assert.deepEqual(focusBox({ width: 1920, height: 1080 }, [1500, 900, 800], 1.125), { w: 800, h: 712, x: 1120, y: 368 });
   assert.match(baseGraph({ edit: {}, segs, src: { width: 1080, height: 1920 }, W: 720, H: 1280 }), /concat=n=2:v=1:a=0,format=rgb24\[vb\]$/);
